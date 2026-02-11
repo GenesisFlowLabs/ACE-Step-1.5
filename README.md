@@ -23,6 +23,7 @@
 - [🏗️ Architecture](#️-architecture)
 - [🦁 Model Zoo](#-model-zoo)
 - [🔬 Benchmark](#-benchmark)
+- [🎮 ROG Flow Z13 Setup Guide](#-rog-flow-z13-setup-guide)
 
 ## 📝 Abstract
 🚀 We present ACE-Step v1.5, a highly efficient open-source music foundation model that brings commercial-grade generation to consumer hardware. On commonly used evaluation metrics, ACE-Step v1.5 achieves quality beyond most commercial music models while remaining extremely fast—under 2 seconds per full song on an A100 and under 10 seconds on an RTX 3090. The model runs locally with less than 4GB of VRAM, and supports lightweight personalization: users can train a LoRA from just a few songs to capture their own style.
@@ -221,6 +222,163 @@ python profile_inference.py --mode benchmark       # Configuration matrix
 ```
 
 > 📖 **Full guide** (all modes, CLI options, output interpretation): [English](./docs/en/BENCHMARK.md) | [中文](./docs/zh/BENCHMARK.md)
+
+## 🎮 ROG Flow Z13 Setup Guide
+
+> **GenesisFlowLabs fork** — Tested and confirmed working on the ASUS ROG Flow Z13 (GZ302EA) with AMD Ryzen AI MAX+ 395 and Radeon 8060S, running Windows 11.
+
+### Hardware Specs
+
+| Component | Spec |
+|-----------|------|
+| **Laptop** | ASUS ROG Flow Z13 (GZ302EA) |
+| **CPU** | AMD Ryzen AI MAX+ 395 (16 cores / 32 threads) |
+| **RAM** | 128 GB DDR5 (unified memory architecture) |
+| **GPU** | AMD Radeon 8060S (RDNA 3.5, gfx1151) |
+| **Storage** | 1 TB NVMe |
+| **OS** | Windows 11 (Build 26200) |
+| **AMD Driver** | 32.0.12074.5+ |
+
+### Performance on This Hardware
+
+| Metric | Value |
+|--------|-------|
+| **Usable GPU Memory** | 50.4 GB (via unified memory) |
+| **ACE-Step Tier** | Unlimited |
+| **Max Song Duration** | 10 minutes (600s) |
+| **Max Batch Size** | 8 simultaneous songs |
+| **Available LM Models** | All — 0.6B, 1.7B, 4B |
+| **CPU Offload Required** | No (GPU memory >= 16 GB) |
+
+> **Unified Memory Note:** The Z13's Ryzen AI MAX+ 395 uses a unified memory architecture where the Radeon 8060S shares system RAM with the CPU. Windows and the AMD driver allocate GPU memory dynamically — up to ~63 GB of shared memory is available alongside ~4 GB dedicated. No BIOS changes are required.
+
+### Setup Instructions (ROCm 7.2 on Windows 11)
+
+The standard `uv sync` / `uv run acestep` workflow installs CUDA PyTorch, which does not work with AMD GPUs. Follow these steps for ROCm instead.
+
+#### Prerequisites
+
+- Python 3.12 (required for ROCm Windows wheels)
+- Git
+- AMD driver 26.1.1 or later
+
+#### Step 1: Clone the Repository
+
+```bash
+git clone https://github.com/GenesisFlowLabs/ACE-Step-1.5.git
+cd ACE-Step-1.5
+```
+
+#### Step 2: Create a ROCm Virtual Environment
+
+```bash
+python -m venv venv_rocm
+venv_rocm\Scripts\activate
+```
+
+#### Step 3: Install ROCm SDK
+
+```bash
+pip install --no-cache-dir ^
+  https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm_sdk_core-7.2.0.dev0-py3-none-win_amd64.whl ^
+  https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm_sdk_devel-7.2.0.dev0-py3-none-win_amd64.whl ^
+  https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm_sdk_libraries_custom-7.2.0.dev0-py3-none-win_amd64.whl ^
+  https://repo.radeon.com/rocm/windows/rocm-rel-7.2/rocm-7.2.0.dev0.tar.gz
+```
+
+#### Step 4: Install ROCm PyTorch
+
+```bash
+pip install --no-cache-dir ^
+  https://repo.radeon.com/rocm/windows/rocm-rel-7.2/torch-2.9.1+rocmsdk20260116-cp312-cp312-win_amd64.whl ^
+  https://repo.radeon.com/rocm/windows/rocm-rel-7.2/torchaudio-2.9.1+rocmsdk20260116-cp312-cp312-win_amd64.whl ^
+  https://repo.radeon.com/rocm/windows/rocm-rel-7.2/torchvision-0.24.1+rocmsdk20260116-cp312-cp312-win_amd64.whl
+```
+
+#### Step 5: Install ACE-Step Dependencies
+
+```bash
+pip install -r requirements-rocm.txt
+```
+
+#### Step 6: Fix `vector_quantize_pytorch` Import
+
+ROCm Windows builds lack full `torch.distributed` support. Patch `venv_rocm\Lib\site-packages\vector_quantize_pytorch\lookup_free_quantization.py`.
+
+**Replace** (lines 14-15):
+```python
+import torch.distributed as dist
+from torch.distributed import nn as dist_nn
+```
+
+**With:**
+```python
+try:
+    import torch.distributed as dist
+    from torch.distributed import nn as dist_nn
+except (ImportError, AttributeError):
+    dist = None
+    dist_nn = None
+```
+
+#### Step 7: Verify GPU Detection
+
+```bash
+venv_rocm\Scripts\python.exe -c "import torch; print(f'CUDA: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0)}'); print(f'HIP: {torch.version.hip}')"
+```
+
+Expected output:
+```
+CUDA: True
+GPU: AMD Radeon(TM) 8060S Graphics
+HIP: 7.2.26024-f6f897bd3d
+```
+
+#### Step 8: Launch
+
+**Option A — Use the ROCm batch launcher:**
+```bash
+start_gradio_ui_rocm.bat
+```
+
+**Option B — Manual launch with environment variables:**
+```bash
+set HSA_OVERRIDE_GFX_VERSION=11.0.0
+set TORCH_COMPILE_BACKEND=eager
+set MIOPEN_FIND_MODE=FAST
+set ACESTEP_LM_BACKEND=pt
+set TOKENIZERS_PARALLELISM=false
+
+venv_rocm\Scripts\python.exe -u acestep\acestep_v15_pipeline.py ^
+  --port 7860 --server-name 127.0.0.1 --language en ^
+  --config_path acestep-v15-turbo --lm_model_path acestep-5Hz-lm-4B ^
+  --init_service true --backend pt
+```
+
+Open http://localhost:7860 in your browser.
+
+### Verified Configuration Output
+
+```
+ROCm GPU detected: AMD Radeon(TM) 8060S Graphics (50.4 GB, HIP 7.2)
+Configuration Tier: unlimited
+Max Duration (with LM): 600s (10 min)
+Max Batch Size (with LM): 8
+Default LM Init: True
+Available LM Models: ['acestep-5Hz-lm-0.6B', 'acestep-5Hz-lm-1.7B', 'acestep-5Hz-lm-4B']
+```
+
+### Known Issues & Workarounds
+
+| Issue | Workaround |
+|-------|------------|
+| `vector_quantize_pytorch` crashes on import | Apply the `torch.distributed` import fix in Step 6 |
+| `torchao` not compatible with ROCm Windows | Excluded in `requirements-rocm.txt` — quantization features unavailable |
+| `torch.compile` not available on ROCm Windows | Set `TORCH_COMPILE_BACKEND=eager` (included in launch env vars) |
+| First-run VAE decode hangs on conv layers | Set `MIOPEN_FIND_MODE=FAST` to use heuristic kernel selection |
+| 4B LM model may not auto-download | Download via the Gradio UI model management tab, or it will download on first use |
+
+---
 
 ## 📜 License & Disclaimer
 
